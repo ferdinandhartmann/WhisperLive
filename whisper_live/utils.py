@@ -4,20 +4,42 @@ import scipy
 import numpy as np
 import av
 from pathlib import Path
-
+import re
 
 def clear_screen():
     """Clears the console screen."""
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def print_transcript(text, translated=False):
-    """Prints formatted transcript text."""
-    wrapper = textwrap.TextWrapper(width=60)
-    text=" ".join(text) if translated else "".join(text)
-    for line in wrapper.wrap(text=text):
-        print(line)
+# def print_transcript(text, translated=False):
+#     """Prints formatted transcript text."""
+#     wrapper = textwrap.TextWrapper(width=60)
+#     text=" ".join(text) if translated else "".join(text)
+#     for line in wrapper.wrap(text=text):
+#         print(line)
 
+def print_transcript(text, translated=False):
+    """Prints formatted transcript text.
+
+    - If `translated` is True, join segments with a space (preserve translation spacing).
+    - If `translated` is False, print each segment on its own line (avoids run-on Japanese lines).
+    Additionally, split on common Japanese and ASCII sentence-ending punctuation so
+    sentences like ending with '。！？.!?' appear on separate lines.
+    """
+    if translated:
+        text = " ".join(text)
+    else:
+        # keep original segments separate to avoid concatenation without punctuation
+        text = "\n".join(text)
+
+    # Split on both ASCII and Japanese sentence-ending punctuation, preserving order
+    sentences = re.split(r'(?<=[。！？.!?])\s*|\n', text)
+    for sentence in sentences:
+        s = sentence.strip()
+        if not s:
+            continue
+        print(s)
+        print()
 
 def format_time(s):
     """Convert seconds (float) to SRT time format."""
@@ -36,8 +58,8 @@ def create_srt_file(segments, resampled_file):
             end_time = format_time(float(segment['end']))
             text = segment['text']
 
-            srt_file.write(f"{segment_number}\n")
-            srt_file.write(f"{start_time} --> {end_time}\n")
+            # srt_file.write(f"{segment_number}\n")
+            # srt_file.write(f"{start_time}\n")
             srt_file.write(f"{text}\n\n")
 
             segment_number += 1

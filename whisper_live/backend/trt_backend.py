@@ -75,11 +75,14 @@ class ServeClientTensorRT(ServeClientBase):
         self.trans_thread = threading.Thread(target=self.speech_to_text)
         self.trans_thread.start()
 
-        self.websocket.send(json.dumps({
-            "uid": self.client_uid,
-            "message": self.SERVER_READY,
-            "backend": "tensorrt"
-        }))
+        self._safe_send(
+            json.dumps({
+                "uid": self.client_uid,
+                "message": self.SERVER_READY,
+                "backend": "tensorrt"
+            }),
+            log_prefix="Sending server ready to client"
+        )
 
     def create_model(self, model, multilingual, warmup=True, use_py_session=False):
         """

@@ -88,11 +88,14 @@ class ServeClientOpenVINO(ServeClientBase):
         self.trans_thread = threading.Thread(target=self.speech_to_text)
         self.trans_thread.start()
 
-        self.websocket.send(json.dumps({
-            "uid": self.client_uid,
-            "message": self.SERVER_READY,
-            "backend": "openvino"
-        }))
+        self._safe_send(
+            json.dumps({
+                "uid": self.client_uid,
+                "message": self.SERVER_READY,
+                "backend": "openvino"
+            }),
+            log_prefix="Sending server ready to client"
+        )
         logging.info(f"Using OpenVINO device: {self.device}")
         logging.info(f"Running OpenVINO backend with language: {self.language} and task: {self.task}")
 

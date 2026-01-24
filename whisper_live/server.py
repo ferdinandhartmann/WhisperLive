@@ -305,7 +305,10 @@ class TranscriptionServer:
 
             self.use_vad = options.get('use_vad')
             if self.client_manager.is_server_full(websocket, options):
-                websocket.close()
+                try:
+                    websocket.close()
+                except Exception:
+                    pass
                 return False  # Indicates that the connection should not continue
 
             if self.backend.is_tensorrt():
@@ -389,7 +392,10 @@ class TranscriptionServer:
         finally:
             if self.client_manager.get_client(websocket):
                 self.cleanup(websocket)
-                websocket.close()
+                try:
+                    websocket.close()
+                except Exception:
+                    pass
             del websocket
 
     def run(self,
@@ -460,15 +466,37 @@ class TranscriptionServer:
                 after detecting no voice activity for more than three consecutive frames, it also triggers the
                 end-of-speech (EOS) flag for the client.
         """
-        if not self.vad_detector(frame_np):
-            self.no_voice_activity_chunks += 1
-            if self.no_voice_activity_chunks > 3:
-                client = self.client_manager.get_client(websocket)
-                if not client.eos:
+        client = self.client_manager.get_client(websocket)
+        # If voice is detected, reset counter and resume if previously EOS
+        if self.vad_detector(frame_np):
+            self.no_voice_activity_chunks = 0
+            if client and getattr(client, 'eos', False):
+                try:
+                    client.set_eos(False)
+                except Exception:
+                    pass
+                # notify client that VAD detected voice
+                try:
+                    websocket.send(json.dumps({"uid": client.client_uid, "message": "VAD_ACTIVE", "vad_active": True}))
+                except Exception:
+                    pass
+            return True
+
+        # No voice detected in this frame
+        self.no_voice_activity_chunks += 1
+        if self.no_voice_activity_chunks > 3:
+            if client and not getattr(client, 'eos', False):
+                try:
                     client.set_eos(True)
-                time.sleep(0.1)    # Sleep 100m; wait some voice activity.
-            return False
-        return True
+                except Exception:
+                    pass
+                # notify client that VAD has detected silence
+                try:
+                    websocket.send(json.dumps({"uid": client.client_uid, "message": "VAD_SILENCE", "vad_active": False}))
+                except Exception:
+                    pass
+            time.sleep(0.1)    # Sleep 100ms; wait some voice activity.
+        return False
 
     def cleanup(self, websocket):
         """

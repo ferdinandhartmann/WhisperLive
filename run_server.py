@@ -67,3 +67,4 @@ if __name__ == "__main__":
         max_connection_time=args.max_connection_time,
         cache_path=args.cache_path
     )
+    print("server ready")

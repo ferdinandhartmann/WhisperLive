@@ -6,8 +6,10 @@ import queue
 from typing import Dict, Any, Optional
 import torch
 import threading
-from transformers import M2M100ForConditionalGeneration
-from whisper_live.backend.tokenization_small100 import SMALL100Tokenizer
+# from transformers import M2M100ForConditionalGeneration
+from transformers import AutoModelForSeq2SeqLM
+# from whisper_live.backend.tokenization_small100 import SMALL100Tokenizer
+from transformers import AutoTokenizer
 
 from whisper_live.backend.base import ServeClientBase
 
@@ -54,13 +56,21 @@ class ServeClientTranslation(ServeClientBase):
         """Load the translation model and tokenizer."""
         try:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            logging.info(f"Loading translation model on device: {self.device}")
+            logging.info(f"Loading translation model on : {self.device}")
             
-            self.translation_model = M2M100ForConditionalGeneration.from_pretrained(
-                self.model_name
+            # self.translation_model = M2M100ForConditionalGeneration.from_pretrained(
+                # self.model_name
+            self.translation_model = AutoModelForSeq2SeqLM.from_pretrained(
+                "facebook/nllb-200-distilled-600M"
             ).to(self.device)
-            self.tokenizer = SMALL100Tokenizer.from_pretrained(self.model_name)
-            self.tokenizer.tgt_lang = self.target_language
+            # self.tokenizer = SMALL100Tokenizer.from_pretrained(self.model_name)
+            # self.tokenizer.tgt_lang = self.target_language
+            self.tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M")
+            self.tokenizer.src_lang = "jpn_Jpan"
+            if self.target_language == "en":
+                self.forced_bos_token_id = self.tokenizer.convert_tokens_to_ids("eng_Latn")
+            elif self.target_language == "de":
+                self.forced_bos_token_id = self.tokenizer.convert_tokens_to_ids("deu_Latn")
             
             self.model_loaded = True
             logging.info(f"Translation model loaded successfully. Target language: {self.target_language}")
@@ -84,12 +94,26 @@ class ServeClientTranslation(ServeClientBase):
             return text
             
         try:
+            text = self.clean_text(text)
             # Encode input and move to device
-            encoded_input = self.tokenizer(text, return_tensors="pt").to(self.device)
+            # encoded_input = self.tokenizer(text, return_tensors="pt").to(self.device)
+            encoded_input = self.tokenizer(
+                text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512,
+            ).to(self.device)
             
             # Generate translation
             with torch.no_grad():
-                generated_tokens = self.translation_model.generate(**encoded_input)
+                # generated_tokens = self.translation_model.generate(**encoded_input)
+                generated_tokens = self.translation_model.generate(
+                    **encoded_input,
+                    forced_bos_token_id=self.forced_bos_token_id,
+                    max_length=512,
+                    num_beams=4,
+                )
             
             # Decode output
             output = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
@@ -98,6 +122,12 @@ class ServeClientTranslation(ServeClientBase):
         except Exception as e:
             logging.error(f"Translation failed for text '{text}': {e}")
             return text
+        
+    def clean_text(self, text):
+        FILLERS = ["なんか", "じゃん", "かな", "えっと"]
+        for f in FILLERS:
+            text = text.replace(f, "")
+        return text
     
     def process_translation_queue(self):
         """
@@ -166,15 +196,13 @@ class ServeClientTranslation(ServeClientBase):
         Args:
             translated_segments (list): List of translated segments to send
         """
-        try:
-            self.websocket.send(
-                json.dumps({
-                    "uid": self.client_uid,
-                    "translated_segments": translated_segments,
-                })
-            )
-        except Exception as e:
-            logging.error(f"[ERROR]: Sending translation data to client: {e}")
+        self._safe_send(
+            json.dumps({
+                "uid": self.client_uid,
+                "translated_segments": translated_segments,
+            }),
+            log_prefix="Sending translation data to client"
+        )
     
     def speech_to_text(self):
         """

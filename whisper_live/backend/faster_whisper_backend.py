@@ -100,12 +100,18 @@ class ServeClientFasterWhisper(ServeClientBase):
                 self.create_model(device)
         except Exception as e:
             logging.error(f"Failed to load model: {e}")
-            self.websocket.send(json.dumps({
-                "uid": self.client_uid,
-                "status": "ERROR",
-                "message": f"Failed to load model: {str(self.model_size_or_path)}"
-            }))
-            self.websocket.close()
+            self._safe_send(
+                json.dumps({
+                    "uid": self.client_uid,
+                    "status": "ERROR",
+                    "message": f"Failed to load model: {str(self.model_size_or_path)}"
+                }),
+                log_prefix="Sending error to client"
+            )
+            try:
+                self.websocket.close()
+            except Exception:
+                pass
             return
 
         self.use_vad = use_vad
@@ -113,14 +119,15 @@ class ServeClientFasterWhisper(ServeClientBase):
         # threading
         self.trans_thread = threading.Thread(target=self.speech_to_text)
         self.trans_thread.start()
-        self.websocket.send(
+        self._safe_send(
             json.dumps(
                 {
                     "uid": self.client_uid,
                     "message": self.SERVER_READY,
                     "backend": "faster_whisper"
                 }
-            )
+            ),
+            log_prefix="Sending server ready to client"
         )
 
     def create_model(self, device):
@@ -183,8 +190,12 @@ class ServeClientFasterWhisper(ServeClientBase):
         if info.language_probability > 0.5:
             self.language = info.language
             logging.info(f"Detected language {self.language} with probability {info.language_probability}")
-            self.websocket.send(json.dumps(
-                {"uid": self.client_uid, "language": self.language, "language_prob": info.language_probability}))
+            self._safe_send(
+                json.dumps(
+                    {"uid": self.client_uid, "language": self.language, "language_prob": info.language_probability}
+                ),
+                log_prefix="Sending language info to client"
+            )
 
     def transcribe_audio(self, input_sample):
         """

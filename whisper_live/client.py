@@ -11,7 +11,12 @@ import websocket
 import uuid
 import time
 import av
+from datetime import datetime
 import whisper_live.utils as utils
+try:
+    import deepl
+except Exception:
+    deepl = None
 
 
 class Client:
@@ -41,6 +46,12 @@ class Client:
         target_language="fr",
         translation_callback=None,
         translation_srt_file_path="output_translated.srt",
+        initial_prompt=None,
+        enable_deepl_translation=False,
+        deepl_source_language=None,
+        deepl_target_language=None,
+        deepl_translation_interval=30,
+        deepl_translation_srt_file_path="output_deepl_translated.srt",
     ):
         """
         Initializes a Client instance for audio recording and streaming to a server.
@@ -88,6 +99,7 @@ class Client:
         self.clip_audio = clip_audio
         self.same_output_threshold = same_output_threshold
         self.transcription_callback = transcription_callback
+        self.initial_prompt = initial_prompt
 
         # Translation-specific attributes
         self.enable_translation = enable_translation
@@ -97,6 +109,20 @@ class Client:
         self.last_translated_segment = None
         if translate:
             self.task = "translate"
+
+        # DeepL translation-specific attributes
+        self.enable_deepl_translation = enable_deepl_translation
+        self.deepl_source_language = deepl_source_language
+        self.deepl_target_language = deepl_target_language
+        self.deepl_translation_interval = deepl_translation_interval
+        self.deepl_translation_srt_file_path = deepl_translation_srt_file_path
+        self.deepl_translated_transcript = []
+        self._deepl_last_translated_index = 0
+        self._deepl_translator = None
+        self._deepl_lock = threading.Lock()
+        self._deepl_stop_event = threading.Event()
+        self._deepl_total_characters_sent = 0
+        self._deepl_last_translation_time = None
 
         self.audio_bytes = None
 
@@ -127,6 +153,121 @@ class Client:
         self.translated_transcript = []
         print("[INFO]: * recording")
 
+        if self.enable_deepl_translation:
+            self._setup_deepl_translator()
+            if self.enable_deepl_translation:
+                self._start_deepl_translation_thread()
+
+    def _normalize_deepl_language_code(self, code):
+        if not code:
+            return None
+        code = str(code).strip()
+        if not code:
+            return None
+        return code.replace("_", "-").upper()
+
+    def _setup_deepl_translator(self):
+        if deepl is None:
+            print("[WARN]: DeepL package is not available. Install it with `pip install deepl`.")
+            self.enable_deepl_translation = False
+            return
+        api_key = os.environ.get("DEEPL_API_KEY")
+        if not api_key:
+            print("[WARN]: DEEPL_API_KEY is not set. DeepL translation disabled.")
+            self.enable_deepl_translation = False
+            return
+        try:
+            self._deepl_translator = deepl.Translator(api_key)
+        except Exception as e:
+            print(f"[WARN]: Failed to initialize DeepL translator: {e}")
+            self.enable_deepl_translation = False
+
+    def _start_deepl_translation_thread(self):
+        self._deepl_thread = threading.Thread(target=self._deepl_translation_loop)
+        self._deepl_thread.daemon = True
+        self._deepl_thread.start()
+
+    def _deepl_translation_loop(self):
+        while not self._deepl_stop_event.is_set():
+            time.sleep(self.deepl_translation_interval)
+            if self._deepl_stop_event.is_set():
+                break
+            self._deepl_translate_pending()
+
+    def _get_deepl_status_string(self):
+        """Generate status string for DeepL translation countdown and character count."""
+        if not self.enable_deepl_translation:
+            return ""
+        
+        # Calculate time until next translation
+        if self._deepl_last_translation_time is None:
+            countdown = self.deepl_translation_interval
+        else:
+            elapsed = time.time() - self._deepl_last_translation_time
+            countdown = max(0, self.deepl_translation_interval - elapsed)
+        
+        # Format the status string
+        status = f"DeepL: {int(countdown)}s | {self._deepl_total_characters_sent} chars"
+        return status
+
+    def _deepl_translate_pending(self, force=False):
+        if not self.enable_deepl_translation or not self._deepl_translator:
+            return
+        with self._deepl_lock:
+            pending_segments = self.transcript[self._deepl_last_translated_index:]
+        if not pending_segments:
+            return
+
+        source_lang = self._normalize_deepl_language_code(self.deepl_source_language) or self._normalize_deepl_language_code(self.language)
+        target_lang = self._normalize_deepl_language_code(self.deepl_target_language) or self._normalize_deepl_language_code(self.target_language)
+
+        if not target_lang:
+            print("[WARN]: DeepL target language not set. Skipping DeepL translation.")
+            return
+
+        texts = [seg["text"].strip() for seg in pending_segments]
+        total_chars = sum(len(text) for text in texts)
+        try:
+            if source_lang:
+                results = self._deepl_translator.translate_text(
+                    texts,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                )
+            else:
+                results = self._deepl_translator.translate_text(
+                    texts,
+                    target_lang=target_lang,
+                )
+            if not isinstance(results, list):
+                results = [results]
+            # Update character counter and timestamp
+            self._deepl_total_characters_sent += total_chars
+            self._deepl_last_translation_time = time.time()
+        except Exception as e:
+            print(f"[WARN]: DeepL translation failed: {e}")
+            return
+
+        translated_segments = []
+        for seg, result in zip(pending_segments, results):
+            translated_segments.append(
+                {
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": result.text,
+                }
+            )
+
+        with self._deepl_lock:
+            self.deepl_translated_transcript.extend(translated_segments)
+            self._deepl_last_translated_index += len(translated_segments)
+
+        print(f"\n[DEEPL] Translation to {target_lang}:")
+        utils.print_transcript([seg["text"] for seg in translated_segments], translated=True)
+
+        if self.deepl_translation_srt_file_path:
+            utils.create_srt_file(self.deepl_translated_transcript, self.deepl_translation_srt_file_path)
+
     def handle_status_messages(self, message_data):
         """Handles server status messages."""
         status = message_data["status"]
@@ -138,6 +279,22 @@ class Client:
             self.server_error = True
         elif status == "WARNING":
             print(f"Message from Server: {message_data['message']}")
+            
+    def add_japanese_punctuation(self, sentence):
+        """
+        Adds punctuation to the sentence based on Japanese sentence-ending markers.
+        """
+        # Define common sentence-ending markers
+        sentence_endings = ["ますか", "ね", "よ", "ます", "だろう", "でしょう", "たしかに"]
+
+        # Check if the sentence ends with a question-like marker
+        if any(sentence.endswith(ending) for ending in sentence_endings):
+            if sentence.endswith("ますか"):
+                return sentence + "?"
+            else:
+                return sentence + "。"  # Add a Japanese full stop (period)
+
+        return sentence  # If no sentence-ending marker is found, return as is
 
     def process_segments(self, segments, translated=False):
         """Processes transcript segments."""
@@ -145,6 +302,12 @@ class Client:
         for i, seg in enumerate(segments):
             if not text or text[-1] != seg["text"]:
                 text.append(seg["text"].strip())
+                
+                 # Automatically add punctuation for Japanese sentences
+                if self.language == "ja":
+                    # Add punctuation based on sentence-ending markers
+                    text[-1] = self.add_japanese_punctuation(text[-1])
+                
                 if i == len(segments) - 1 and not seg.get("completed", False):
                     self.last_segment = seg
                 elif self.server_backend == "faster_whisper" and seg.get("completed", False):
@@ -153,7 +316,11 @@ class Client:
                             self.translated_transcript.append(seg)
                     else:
                         if (not self.transcript or float(seg['start']) >= float(self.transcript[-1]['end'])):
-                            self.transcript.append(seg)
+                            if self.enable_deepl_translation:
+                                with self._deepl_lock:
+                                    self.transcript.append(seg)
+                            else:
+                                self.transcript.append(seg)
         # update last received segment and last valid response time
         if not translated:
             if self.last_received_segment is None or self.last_received_segment != segments[-1]["text"]:
@@ -177,15 +344,36 @@ class Client:
                 return
         
         if self.log_transcription:
-            original_text = [seg["text"] for seg in self.transcript[-4:]]
+            #  original_text = [seg["text"] for seg in self.transcript[-4:]]
+            original_text = [seg["text"] for seg in self.transcript[-self.send_last_n_segments:]]
             if self.last_segment is not None and self.last_segment["text"] not in original_text:
                 original_text.append(self.last_segment["text"])
             
+            #### PRINT TO TERMINAL
             utils.clear_screen()
             utils.print_transcript(original_text)
             if self.enable_translation:
                 print(f"\n\nTRANSLATION to {self.target_language}:")
-                utils.print_transcript([seg["text"] for seg in self.translated_transcript[-4:]], translated=True)
+                # utils.print_transcript([seg["text"] for seg in self.translated_transcript[-4:]], translated=True)
+                utils.print_transcript([seg["text"] for seg in self.translated_transcript[-self.send_last_n_segments:]], translated=True)
+            if self.enable_deepl_translation:
+                target_lang = self._normalize_deepl_language_code(self.deepl_target_language) or self._normalize_deepl_language_code(self.target_language)
+                print(f"\n\nDEEPL TRANSLATION to {target_lang}:")
+                utils.print_transcript([seg["text"] for seg in self.deepl_translated_transcript[-self.send_last_n_segments:]], translated=True)
+                
+                # Display DeepL status at bottom right
+                status_str = self._get_deepl_status_string()
+                if status_str:
+                    # ANSI escape codes to save cursor, move to bottom right, print, restore cursor
+                    import shutil
+                    terminal_width = shutil.get_terminal_size((80, 20)).columns
+                    status_padding = terminal_width - len(status_str) - 2
+                    if status_padding > 0:
+                        print(f"\033[s", end="")  # Save cursor position
+                        print(f"\033[999;{status_padding}H", end="")  # Move to bottom right
+                        print(f"\033[90m{status_str}\033[0m", end="")  # Print in gray
+                        print(f"\033[u", end="", flush=True)  # Restore cursor position
+            
 
     def on_message(self, ws, message):
         """
@@ -221,6 +409,14 @@ class Client:
             print(f"[INFO]: Server Running with backend {self.server_backend}")
             return
 
+        # Server notifications about VAD state
+        if "message" in message.keys() and message["message"] == "VAD_SILENCE":
+            print("[INFO]: Server VAD: silence detected — pausing processing until voice resumes.")
+            return
+
+        if "message" in message.keys() and message["message"] == "VAD_ACTIVE":
+            print("[INFO]: Server VAD: voice detected — resuming processing.")
+            return
         if "language" in message.keys():
             self.language = message.get("language")
             lang_prob = message.get("language_prob")
@@ -271,9 +467,12 @@ class Client:
                     "same_output_threshold": self.same_output_threshold,
                     "enable_translation": self.enable_translation,
                     "target_language": self.target_language,
+                    "initial_prompt": self.initial_prompt,
                 }
             )
         )
+        # Inform whether VAD is enabled for this client
+        print(f"[INFO]: use_vad={self.use_vad}")
 
     def send_packet_to_server(self, message):
         """
@@ -297,6 +496,7 @@ class Client:
 
         """
         try:
+            self._deepl_stop_event.set()
             self.client_socket.close()
         except Exception as e:
             print("[ERROR]: Error closing WebSocket:", e)
@@ -323,6 +523,12 @@ class Client:
             message (output_path, optional): The path to the target file.  Default is "output.srt".
 
         """
+        base_dir = os.getcwd()
+        outputs_dir = os.path.join(base_dir, "outputs")
+        os.makedirs(outputs_dir, exist_ok=True)
+        recordingname_date = datetime.now().strftime("%y%m%d_%H%M")
+        output_path = os.path.join(outputs_dir, f"{recordingname_date}.srt")
+        
         if self.server_backend == "faster_whisper":
             if not self.transcript and self.last_segment is not None:
                 self.transcript.append(self.last_segment)
@@ -333,11 +539,23 @@ class Client:
         if self.enable_translation:
             utils.create_srt_file(self.translated_transcript, self.translation_srt_file_path)
 
-    def wait_before_disconnect(self):
+        if self.enable_deepl_translation:
+            self._deepl_translate_pending(force=True)
+            utils.create_srt_file(self.deepl_translated_transcript, self.deepl_translation_srt_file_path)
+
+    def wait_before_disconnect(self, max_wait_seconds=None):
         """Waits a bit before disconnecting in order to process pending responses."""
-        assert self.last_response_received
-        while time.time() - self.last_response_received < self.disconnect_if_no_response_for:
-            continue
+        if not self.last_response_received:
+            return
+        timeout = self.disconnect_if_no_response_for if max_wait_seconds is None else max_wait_seconds
+        start = time.time()
+        try:
+            while time.time() - self.last_response_received < timeout:
+                if time.time() - start > timeout:
+                    break
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            return
 
 
 class TranscriptionTeeClient:
@@ -493,6 +711,16 @@ class TranscriptionTeeClient:
                 self.stream.stop_stream()
                 self.stream.close()
                 self.p.terminate()
+                try:
+                    for client in self.clients:
+                        if client.last_response_received:
+                            try:
+                                client.wait_before_disconnect(max_wait_seconds=2)
+                            except Exception:
+                                pass
+                    self.multicast_packet(Client.END_OF_AUDIO.encode('utf-8'), True)
+                except Exception:
+                    pass
                 self.close_all_clients()
                 self.write_all_clients_srt()
                 print("[INFO]: Keyboard interrupt.")
@@ -608,6 +836,17 @@ class TranscriptionTeeClient:
         self.stream.stop_stream()
         self.stream.close()
         self.p.terminate()
+        # Gracefully signal end-of-audio before closing sockets
+        try:
+            for client in self.clients:
+                if client.last_response_received:
+                    try:
+                        client.wait_before_disconnect(max_wait_seconds=2)
+                    except Exception:
+                        pass
+            self.multicast_packet(Client.END_OF_AUDIO.encode('utf-8'), True)
+        except Exception:
+            pass
         self.close_all_clients()
         if self.save_output_recording:
             self.write_output_recording(n_audio_file)
@@ -652,6 +891,7 @@ class TranscriptionTeeClient:
 
         except KeyboardInterrupt:
             self.finalize_recording(n_audio_file)
+            print("[INFO]: Keyboard interrupt.")
 
     def write_audio_frames_to_file(self, frames, file_name):
         """
@@ -691,6 +931,13 @@ class TranscriptionTeeClient:
             for i in range(n_audio_file)
             if os.path.exists(f"chunks/{i}.wav")
         ]
+        base_dir = os.getcwd()
+        outputs_dir = os.path.join(base_dir, "outputs")
+        os.makedirs(outputs_dir, exist_ok=True)
+        recordingname_date = datetime.now().strftime("%y%m%d_%H%M")
+        base_name = os.path.splitext(os.path.basename(self.output_recording_filename))[0]
+        self.output_recording_filename = os.path.join(outputs_dir, f"{base_name}_{recordingname_date}.wav")
+        
         with wave.open(self.output_recording_filename, "wb") as wavfile:
             wavfile: wave.Wave_write
             wavfile.setnchannels(self.channels)
@@ -756,6 +1003,11 @@ class TranscriptionClient(TranscriptionTeeClient):
         target_language (str, optional): Target language for translation. Defaults to 'fr'.
         translation_callback (callable, optional): A callback function to handle translation results. Default is None.
         translation_srt_file_path (str, optional): The file path to save the translated output SRT file. Default is "output_translated.srt".
+        enable_deepl_translation (bool, optional): Whether to enable DeepL translation. Defaults to False.
+        deepl_source_language (str, optional): DeepL source language code (e.g., "DE", "EN"). Defaults to None.
+        deepl_target_language (str, optional): DeepL target language code (e.g., "EN", "FR"). Defaults to None.
+        deepl_translation_interval (int, optional): Seconds between DeepL translation batches. Defaults to 30.
+        deepl_translation_srt_file_path (str, optional): File path to save DeepL translations. Default is "output_deepl_translated.srt".
 
     Attributes:
         client (Client): An instance of the underlying Client class responsible for handling the WebSocket connection.
@@ -790,6 +1042,12 @@ class TranscriptionClient(TranscriptionTeeClient):
         target_language="fr",
         translation_callback=None,
         translation_srt_file_path="./output_translated.srt",
+        initial_prompt=None,
+        enable_deepl_translation=False,
+        deepl_source_language=None,
+        deepl_target_language=None,
+        deepl_translation_interval=30,
+        deepl_translation_srt_file_path="./output_deepl_translated.srt",
     ):
         self.client = Client(
             host,
@@ -810,6 +1068,12 @@ class TranscriptionClient(TranscriptionTeeClient):
             target_language=target_language,
             translation_callback=translation_callback,
             translation_srt_file_path=translation_srt_file_path,
+            initial_prompt=initial_prompt,
+            enable_deepl_translation=enable_deepl_translation,
+            deepl_source_language=deepl_source_language,
+            deepl_target_language=deepl_target_language,
+            deepl_translation_interval=deepl_translation_interval,
+            deepl_translation_srt_file_path=deepl_translation_srt_file_path,
         )
 
         if save_output_recording and not output_recording_filename.endswith(".wav"):
@@ -818,6 +1082,8 @@ class TranscriptionClient(TranscriptionTeeClient):
             raise ValueError(f"Please provide a valid `output_transcription_path`: {output_transcription_path}. The file extension should be `.srt`.")
         if not translation_srt_file_path.endswith(".srt"):
             raise ValueError(f"Please provide a valid `translation_srt_file_path`: {translation_srt_file_path}. The file extension should be `.srt`.")
+        if not deepl_translation_srt_file_path.endswith(".srt"):
+            raise ValueError(f"Please provide a valid `deepl_translation_srt_file_path`: {deepl_translation_srt_file_path}. The file extension should be `.srt`.")
         TranscriptionTeeClient.__init__(
             self,
             [self.client],

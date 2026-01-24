@@ -4,6 +4,10 @@ import threading
 import time
 import queue
 import numpy as np
+try:
+    from websockets.exceptions import ConnectionClosed
+except Exception:
+    ConnectionClosed = Exception
 
 
 class ServeClientBase(object):
@@ -237,15 +241,13 @@ class ServeClientBase(object):
         Returns:
             segments (list): A list of transcription segments to be sent to the client.
         """
-        try:
-            self.websocket.send(
-                json.dumps({
-                    "uid": self.client_uid,
-                    "segments": segments,
-                })
-            )
-        except Exception as e:
-            logging.error(f"[ERROR]: Sending data to client: {e}")
+        self._safe_send(
+            json.dumps({
+                "uid": self.client_uid,
+                "segments": segments,
+            }),
+            log_prefix="Sending data to client"
+        )
 
     def disconnect(self):
         """
@@ -255,10 +257,34 @@ class ServeClientBase(object):
         that the transcription service is disconnecting gracefully.
 
         """
-        self.websocket.send(json.dumps({
-            "uid": self.client_uid,
-            "message": self.DISCONNECT
-        }))
+        self._safe_send(
+            json.dumps({
+                "uid": self.client_uid,
+                "message": self.DISCONNECT
+            }),
+            log_prefix="Sending disconnect to client"
+        )
+
+    def _safe_send(self, payload, log_prefix="Sending data to client"):
+        """
+        Safely send a payload over the websocket.
+
+        Returns:
+            bool: True if send succeeded, False otherwise.
+        """
+        if self.websocket is None:
+            self.exit = True
+            return False
+        try:
+            self.websocket.send(payload)
+            return True
+        except ConnectionClosed:
+            # Normal when client disconnects; stop worker threads quietly.
+            self.exit = True
+            return False
+        except Exception as e:
+            logging.error(f"[ERROR]: {log_prefix}: {e}")
+            return False
 
     def cleanup(self):
         """
