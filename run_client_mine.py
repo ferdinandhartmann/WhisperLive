@@ -10,10 +10,8 @@ def main():
         model="large-v3-turbo", #large-v3-turbo not multilingual
         lang="de",         
         translate=False,    
-        
-        # files="C:\Users\ferdi\Documents\programming\WhisperLive\podcast_german.mp3",
-        
-        output_recording_filename="./rec.wav",
+                
+        # output_recording_filename="./rec.wav",
         
         save_output_recording=True,
         
@@ -23,8 +21,8 @@ def main():
         enable_deepl_translation=True,
         deepl_source_language="DE",
         deepl_target_language="EN-US",
-        deepl_translation_interval=10, # seconds
-        deepl_translation_srt_file_path="./output_deepl_translated.srt",
+        deepl_translation_interval=15, # seconds
+        # deepl_translation_srt_file_path="./output_deepl_translated.srt",
         
         initial_prompt=None,
         # initial_prompt="Translate german sentences into english.",

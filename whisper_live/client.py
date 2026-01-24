@@ -17,6 +17,12 @@ try:
     import deepl
 except Exception:
     deepl = None
+try:
+    from rich.live import Live
+    from rich.console import Group
+except ImportError:
+    Live = None
+    Group = None
 
 
 class Client:
@@ -125,6 +131,13 @@ class Client:
         self._deepl_last_translation_time = None
 
         self.audio_bytes = None
+        
+        # Initialize rich live display for dynamic terminal updates
+        self.live_display = None
+        self._display_lock = threading.Lock()
+        if self.log_transcription and Live is not None:
+            self.live_display = Live(Group(), refresh_per_second=10, console=None)
+            self.live_display.start()
 
         if host is not None and port is not None:
             socket_protocol = 'wss' if self.use_wss else "ws"
@@ -262,8 +275,8 @@ class Client:
             self.deepl_translated_transcript.extend(translated_segments)
             self._deepl_last_translated_index += len(translated_segments)
 
-        print(f"\n[DEEPL] Translation to {target_lang}:")
-        utils.print_transcript([seg["text"] for seg in translated_segments], translated=True)
+        # Note: DeepL translations are displayed in the live panel, no need to print here
+        # to avoid breaking the live display with additional print statements
 
         if self.deepl_translation_srt_file_path:
             utils.create_srt_file(self.deepl_translated_transcript, self.deepl_translation_srt_file_path)
@@ -349,17 +362,16 @@ class Client:
             if self.last_segment is not None and self.last_segment["text"] not in original_text:
                 original_text.append(self.last_segment["text"])
             
-            #### PRINT TO TERMINAL
-            utils.clear_screen()
-            
+            #### UPDATE TERMINAL DISPLAY
             # Create rich panels for better visualization
             from rich.panel import Panel
-            from rich.console import Console
             from rich.text import Text
-            from rich.table import Table
             
-            # Use a console that won't block keyboard interrupts
-            console = Console(force_terminal=True, force_interactive=False)
+            # If live display is not available, fall back to clearing screen
+            if self.live_display is None:
+                utils.clear_screen()
+                from rich.console import Console
+                console = Console(force_terminal=True, force_interactive=False)
             
             # Original transcription panel
             transcript_text = Text()
@@ -372,7 +384,9 @@ class Client:
                 border_style="green",
                 padding=(1, 2)
             )
-            console.print(transcript_panel)
+            
+            # Gather all panels into a group
+            display_panels = [transcript_panel]
             
             # Translation panel (if enabled)
             if self.enable_translation:
@@ -386,7 +400,7 @@ class Client:
                     border_style="yellow",
                     padding=(1, 2)
                 )
-                console.print(translation_panel)
+                display_panels.append(translation_panel)
             
             # DeepL translation panel (if enabled)
             if self.enable_deepl_translation:
@@ -405,7 +419,15 @@ class Client:
                     border_style="magenta",
                     padding=(1, 2)
                 )
-                console.print(deepl_panel)
+                display_panels.append(deepl_panel)
+            
+            # Update live display or print to console (thread-safe)
+            if self.live_display is not None:
+                with self._display_lock:
+                    self.live_display.update(Group(*display_panels))
+            else:
+                for panel in display_panels:
+                    console.print(panel)
             
 
     def on_message(self, ws, message):
@@ -538,6 +560,13 @@ class Client:
             self.ws_thread.join()
         except Exception as e:
             print("[ERROR:] Error joining WebSocket thread:", e)
+        
+        # Stop live display if it was started
+        if self.live_display is not None:
+            try:
+                self.live_display.stop()
+            except Exception as e:
+                print("[ERROR]: Error stopping live display:", e)
 
     def get_client_socket(self):
         """
@@ -570,10 +599,12 @@ class Client:
             utils.create_srt_file(self.transcript, output_path)
 
         if self.enable_translation:
+            self.translation_srt_file_path = output_path.replace(".srt", "_translated.srt")
             utils.create_srt_file(self.translated_transcript, self.translation_srt_file_path)
 
         if self.enable_deepl_translation:
             self._deepl_translate_pending(force=True)
+            self.deepl_translation_srt_file_path = output_path.replace(".srt", "_deepl.srt")
             utils.create_srt_file(self.deepl_translated_transcript, self.deepl_translation_srt_file_path)
 
     def wait_before_disconnect(self, max_wait_seconds=None):
