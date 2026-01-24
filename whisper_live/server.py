@@ -433,19 +433,34 @@ class TranscriptionServer:
                 logging.info("Single model mode currently only works with custom models.")
         if not BackendType.is_valid(backend):
             raise ValueError(f"{backend} is not a valid backend type. Choose backend from {BackendType.valid_types()}")
-        with serve(
-            functools.partial(
-                self.recv_audio,
-                backend=BackendType(backend),
-                faster_whisper_custom_model_path=faster_whisper_custom_model_path,
-                whisper_tensorrt_path=whisper_tensorrt_path,
-                trt_multilingual=trt_multilingual,
-                trt_py_session=trt_py_session,
-            ),
-            host,
-            port
-        ) as server:
-            server.serve_forever()
+        
+        try:
+            with serve(
+                functools.partial(
+                    self.recv_audio,
+                    backend=BackendType(backend),
+                    faster_whisper_custom_model_path=faster_whisper_custom_model_path,
+                    whisper_tensorrt_path=whisper_tensorrt_path,
+                    trt_multilingual=trt_multilingual,
+                    trt_py_session=trt_py_session,
+                ),
+                host,
+                port
+            ) as server:
+                logging.info(f"WebSocket server started on {host}:{port}")
+                server.serve_forever()
+        except KeyboardInterrupt:
+            logging.info("Server shutdown requested by user (Ctrl+C)")
+        except Exception as e:
+            logging.error(f"Server error: {e}")
+        finally:
+            logging.info("Server shutting down...")
+            # Clean up all clients
+            for websocket in list(self.client_manager.clients.keys()):
+                try:
+                    self.cleanup(websocket)
+                except Exception:
+                    pass
 
     def voice_activity(self, websocket, frame_np):
         """

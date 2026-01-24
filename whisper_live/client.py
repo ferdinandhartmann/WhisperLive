@@ -37,7 +37,7 @@ class Client:
         use_vad=True,
         use_wss=False,
         log_transcription=True,
-        send_last_n_segments=10,
+        send_last_n_segments=15,
         no_speech_thresh=0.45,
         clip_audio=False,
         same_output_threshold=10,
@@ -351,28 +351,61 @@ class Client:
             
             #### PRINT TO TERMINAL
             utils.clear_screen()
-            utils.print_transcript(original_text)
+            
+            # Create rich panels for better visualization
+            from rich.panel import Panel
+            from rich.console import Console
+            from rich.text import Text
+            from rich.table import Table
+            
+            # Use a console that won't block keyboard interrupts
+            console = Console(force_terminal=True, force_interactive=False)
+            
+            # Original transcription panel
+            transcript_text = Text()
+            for text_segment in original_text:
+                transcript_text.append(text_segment.strip() + "\n\n", style="white")
+            
+            transcript_panel = Panel(
+                transcript_text,
+                title="[bold green]🎤 Live Transcription[/bold green]",
+                border_style="green",
+                padding=(1, 2)
+            )
+            console.print(transcript_panel)
+            
+            # Translation panel (if enabled)
             if self.enable_translation:
-                print(f"\n\nTRANSLATION to {self.target_language}:")
-                # utils.print_transcript([seg["text"] for seg in self.translated_transcript[-4:]], translated=True)
-                utils.print_transcript([seg["text"] for seg in self.translated_transcript[-self.send_last_n_segments:]], translated=True)
+                translation_text = Text()
+                for seg in self.translated_transcript[-self.send_last_n_segments:]:
+                    translation_text.append(seg["text"].strip() + "\n\n", style="white")
+                
+                translation_panel = Panel(
+                    translation_text,
+                    title=f"[bold yellow]🌐 Translation to {self.target_language.upper()}[/bold yellow]",
+                    border_style="yellow",
+                    padding=(1, 2)
+                )
+                console.print(translation_panel)
+            
+            # DeepL translation panel (if enabled)
             if self.enable_deepl_translation:
                 target_lang = self._normalize_deepl_language_code(self.deepl_target_language) or self._normalize_deepl_language_code(self.target_language)
-                print(f"\n\nDEEPL TRANSLATION to {target_lang}:")
-                utils.print_transcript([seg["text"] for seg in self.deepl_translated_transcript[-self.send_last_n_segments:]], translated=True)
+                deepl_text = Text()
+                for seg in self.deepl_translated_transcript[-self.send_last_n_segments:]:
+                    deepl_text.append(seg["text"].strip() + "\n\n", style="white")
                 
-                # Display DeepL status at bottom right
+                # Create status bar with DeepL info
                 status_str = self._get_deepl_status_string()
-                if status_str:
-                    # ANSI escape codes to save cursor, move to bottom right, print, restore cursor
-                    import shutil
-                    terminal_width = shutil.get_terminal_size((80, 20)).columns
-                    status_padding = terminal_width - len(status_str) - 2
-                    if status_padding > 0:
-                        print(f"\033[s", end="")  # Save cursor position
-                        print(f"\033[999;{status_padding}H", end="")  # Move to bottom right
-                        print(f"\033[90m{status_str}\033[0m", end="")  # Print in gray
-                        print(f"\033[u", end="", flush=True)  # Restore cursor position
+                
+                deepl_panel = Panel(
+                    deepl_text,
+                    title=f"[bold magenta]🔄 DeepL Translation to {target_lang}[/bold magenta]",
+                    subtitle=f"[dim]{status_str}[/dim]" if status_str else None,
+                    border_style="magenta",
+                    padding=(1, 2)
+                )
+                console.print(deepl_panel)
             
 
     def on_message(self, ws, message):
@@ -1033,7 +1066,7 @@ class TranscriptionClient(TranscriptionTeeClient):
         output_transcription_path="./output.srt",
         log_transcription=True,
         mute_audio_playback=False,
-        send_last_n_segments=10,
+        send_last_n_segments=15,
         no_speech_thresh=0.45,
         clip_audio=False,
         same_output_threshold=10,

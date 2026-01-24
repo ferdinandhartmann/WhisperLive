@@ -5,21 +5,24 @@ import numpy as np
 import av
 from pathlib import Path
 import re
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.layout import Layout
+from rich.live import Live
+from rich.table import Table
+
+# Initialize rich console with force_terminal to ensure proper signal handling
+console = Console(force_terminal=True, force_interactive=False)
 
 def clear_screen():
     """Clears the console screen."""
+    # Use system clear to avoid blocking keyboard interrupts
     os.system("cls" if os.name == "nt" else "clear")
 
 
-# def print_transcript(text, translated=False):
-#     """Prints formatted transcript text."""
-#     wrapper = textwrap.TextWrapper(width=60)
-#     text=" ".join(text) if translated else "".join(text)
-#     for line in wrapper.wrap(text=text):
-#         print(line)
-
 def print_transcript(text, translated=False):
-    """Prints formatted transcript text.
+    """Prints formatted transcript text using rich library.
 
     - If `translated` is True, join segments with a space (preserve translation spacing).
     - If `translated` is False, print each segment on its own line (avoids run-on Japanese lines).
@@ -34,12 +37,18 @@ def print_transcript(text, translated=False):
 
     # Split on both ASCII and Japanese sentence-ending punctuation, preserving order
     sentences = re.split(r'(?<=[。！？.!?])\s*|\n', text)
+    formatted_text = Text()
     for sentence in sentences:
         s = sentence.strip()
         if not s:
             continue
-        print(s)
-        print()
+        if translated:
+            formatted_text.append(s + "\n", style="cyan")
+        else:
+            formatted_text.append(s + "\n", style="white")
+        formatted_text.append("\n")
+    
+    console.print(formatted_text)
 
 def format_time(s):
     """Convert seconds (float) to SRT time format."""

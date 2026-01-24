@@ -32,7 +32,7 @@ class ServeClientBase(object):
         self,
         client_uid,
         websocket,
-        send_last_n_segments=10,
+        send_last_n_segments=15,
         no_speech_thresh=0.45,
         clip_audio=False,
         same_output_threshold=10,
