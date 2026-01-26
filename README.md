@@ -1,3 +1,61 @@
+# WhisperLive Augmentation
+
+## How to Run
+
+How to connect a local client to a remote WhisperLive server via SSH tunnel.
+
+### 1. Start SSH tunnel
+Run this on your laptop to forward local port 9090 to the remote server:
+```bash
+ssh -L 9090:rtx-a6000.local:9090 rtx_jump
+```
+
+Keep the SSH session open while using the client.
+
+### 2. Run the server (remote)
+SSH into the server (if not already) and start the server:
+```bash
+# on the remote host
+chmod +x ./run_server.sh   # only if needed
+./run_server.sh
+```
+
+### 3. Run the client (Windows laptop)
+Activate the virtualenv and start the client.
+
+PowerShell:
+```powershell
+.\venv_whisperlive\Scripts\Activate.ps1
+python run_client_mine.py
+```
+
+Alternative (explicit python executable):
+```powershell
+& 'C:/Users/ferdi/Documents/programming/WhisperLive/venv_whisperlive/Scripts/python.exe' run_client_mine.py
+```
+
+Notes:
+- Ensure the SSH tunnel remains active and that local port 9090 is not in use.
+- If using a different remote hostname or port, adjust the `ssh -L` command accordingly.
+
+<br>
+
+![alt text](image.png)
+
+
+
+<br><br><br>
+
+  
+---
+
+<br><br><br>
+
+
+
+
+
+
 # WhisperLive
 
 <h2 align="center">

@@ -502,7 +502,7 @@ class Client:
                 
                 translation_panel = Panel(
                     translation_text,
-                    title=f"[bold yellow]🌐 Translation to {self.target_language.upper()}[/bold yellow]",
+                    title=f"[bold yellow] Translation to {self.target_language.upper()}[/bold yellow]",
                     border_style="yellow",
                     padding=(1, 2)
                 )
@@ -520,8 +520,8 @@ class Client:
                 
                 deepl_panel = Panel(
                     deepl_text,
-                    title=f"[bold magenta]🔄 DeepL Translation to {target_lang}[/bold magenta]",
-                    subtitle=f"[dim]{status_str}[/dim]" if status_str else None,
+                    title=f"[bold magenta] DeepL Translation to {target_lang}[/bold magenta]",
+                    subtitle=f"{status_str}" if status_str else None,
                     border_style="magenta",
                     padding=(1, 2)
                 )

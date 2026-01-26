@@ -12,7 +12,6 @@ def main():
         translate=False,    
                 
         # output_recording_filename="./rec.wav",
-        
         save_output_recording=True,
         
         enable_translation=False,
@@ -21,7 +20,7 @@ def main():
         enable_deepl_translation=True,
         deepl_source_language="JA",
         deepl_target_language="EN-US",
-        deepl_translation_interval=10, # seconds
+        deepl_translation_interval=8, # seconds
         # deepl_translation_srt_file_path="./output_deepl_translated.srt",
 
         enable_gemini_translation=False,
