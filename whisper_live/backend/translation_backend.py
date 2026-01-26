@@ -27,7 +27,7 @@ class ServeClientTranslation(ServeClientBase):
         websocket,
         translation_queue,
         target_language="fr", 
-        send_last_n_segments=10,
+        send_last_n_segments=15,
         model_name="alirezamsh/small100"
     ):
         """

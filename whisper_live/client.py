@@ -13,16 +13,11 @@ import time
 import av
 from datetime import datetime
 import whisper_live.utils as utils
-try:
-    import deepl
-except Exception:
-    deepl = None
-try:
-    from rich.live import Live
-    from rich.console import Group
-except ImportError:
-    Live = None
-    Group = None
+import deepl
+from google import genai
+from google.genai import types
+from rich.live import Live
+from rich.console import Group
 
 
 class Client:
@@ -58,6 +53,11 @@ class Client:
         deepl_target_language=None,
         deepl_translation_interval=30,
         deepl_translation_srt_file_path="output_deepl_translated.srt",
+        enable_gemini_translation=False,
+        gemini_target_language=None,
+        gemini_translation_interval=30,
+        gemini_model="gemini-1.5-flash",
+        gemini_translation_output_path="output_gemini_translation.txt",
     ):
         """
         Initializes a Client instance for audio recording and streaming to a server.
@@ -131,12 +131,25 @@ class Client:
         self._deepl_last_translation_time = None
 
         self.audio_bytes = None
+
+        # Gemini translation-specific attributes
+        self.enable_gemini_translation = enable_gemini_translation
+        self.gemini_target_language = gemini_target_language or self.target_language
+        self.gemini_translation_interval = gemini_translation_interval
+        self.gemini_model = gemini_model
+        self.gemini_translation_output_path = gemini_translation_output_path
+        self.gemini_translated_text = ""
+        self._gemini_lock = threading.Lock()
+        self._gemini_stop_event = threading.Event()
+        self._gemini_last_translation_time = None
+        self._gemini_client = None
         
         # Initialize rich live display for dynamic terminal updates
         self.live_display = None
         self._display_lock = threading.Lock()
         if self.log_transcription and Live is not None:
-            self.live_display = Live(Group(), refresh_per_second=10, console=None)
+            # Use in-terminal (non-alternate screen) rendering to preserve scrollback.
+            self.live_display = Live(Group(), refresh_per_second=10, console=None, screen=False)
             self.live_display.start()
 
         if host is not None and port is not None:
@@ -170,6 +183,99 @@ class Client:
             self._setup_deepl_translator()
             if self.enable_deepl_translation:
                 self._start_deepl_translation_thread()
+
+        if self.enable_gemini_translation:
+            self._setup_gemini_translator()
+            if self.enable_gemini_translation:
+                self._start_gemini_translation_thread()
+                
+    def _setup_gemini_translator(self):
+        api_key = os.environ.get("GEMINI_API_KEY")
+        try:
+            # The new SDK automatically handles the API version
+            self._gemini_client = genai.Client(api_key=api_key)
+            
+            # Newest 2026 Model
+            self.gemini_model = "gemini-3-flash-preview" 
+            self.enable_gemini_translation = True
+            print(f"[INFO]: Gemini 3 initialized successfully.")
+        except Exception as e:
+            print(f"[WARN]: Failed to initialize Gemini 3: {e}")
+            self.enable_gemini_translation = False
+
+    def _start_gemini_translation_thread(self):
+        self._gemini_thread = threading.Thread(target=self._gemini_translation_loop)
+        self._gemini_thread.daemon = True
+        self._gemini_thread.start()
+
+    def _gemini_translation_loop(self):
+        while not self._gemini_stop_event.is_set():
+            time.sleep(self.gemini_translation_interval)
+            if self._gemini_stop_event.is_set():
+                break
+            self._gemini_translate_full_text()
+
+    def _get_gemini_status_string(self):
+        if not self.enable_gemini_translation:
+            return ""
+        if self._gemini_last_translation_time is None:
+            countdown = self.gemini_translation_interval
+        else:
+            elapsed = time.time() - self._gemini_last_translation_time
+            countdown = max(0, self.gemini_translation_interval - elapsed)
+        return f"Gemini: {int(countdown)}s"
+
+    def _get_full_transcript_text(self):
+        segments = list(self.transcript)
+        if self.last_segment is not None:
+            if not segments or segments[-1].get("text") != self.last_segment.get("text"):
+                segments.append(self.last_segment)
+        return " ".join(seg.get("text", "").strip() for seg in segments if seg.get("text"))
+
+    def _gemini_translate_full_text(self):
+            if not self.enable_gemini_translation or not self._gemini_client:
+                return
+                
+            full_text = self._get_full_transcript_text().strip()
+            if not full_text:
+                return
+
+            try:
+                # Using the new Client.models.generate_content syntax
+                result = self._gemini_client.models.generate_content(
+                    model=self.gemini_model,
+                    contents=full_text,
+                    config=types.GenerateContentConfig(
+                        # System instructions are now part of the config
+                        system_instruction=f"You are a professional translator. Translate all input to {self.gemini_target_language}. Output ONLY the translated text without commentary.",
+                        temperature=0.3, # Lower temperature = more consistent translation
+                    )
+                )
+                
+                translated_text = result.text.strip() if result.text else ""
+
+                if translated_text:
+                    # Format: put each sentence that ends with '!' or '?' on its own line
+                    try:
+                        import re
+                        formatted = re.sub(r'([.!?])\s*', r"\1\n", translated_text).strip()
+                    except Exception:
+                        formatted = translated_text
+
+                    with self._gemini_lock:
+                        self.gemini_translated_text = formatted
+                        self._gemini_last_translation_time = time.time()
+
+                    # Save to file
+                    if self.gemini_translation_output_path:
+                        try:
+                            with open(self.gemini_translation_output_path, "w", encoding="utf-8") as f:
+                                f.write(formatted)
+                        except Exception as e:
+                            print(f"[WARN]: Failed to write Gemini translation output: {e}")
+
+            except Exception as e:
+                print(f"[WARN]: Gemini 3 translation failed: {e}")
 
     def _normalize_deepl_language_code(self, code):
         if not code:
@@ -376,7 +482,7 @@ class Client:
             # Original transcription panel
             transcript_text = Text()
             for text_segment in original_text:
-                transcript_text.append(text_segment.strip() + "\n\n", style="white")
+                transcript_text.append(text_segment.strip() + "\n", style="white")
             
             transcript_panel = Panel(
                 transcript_text,
@@ -392,7 +498,7 @@ class Client:
             if self.enable_translation:
                 translation_text = Text()
                 for seg in self.translated_transcript[-self.send_last_n_segments:]:
-                    translation_text.append(seg["text"].strip() + "\n\n", style="white")
+                    translation_text.append(seg["text"].strip() + "\n", style="white")
                 
                 translation_panel = Panel(
                     translation_text,
@@ -407,7 +513,7 @@ class Client:
                 target_lang = self._normalize_deepl_language_code(self.deepl_target_language) or self._normalize_deepl_language_code(self.target_language)
                 deepl_text = Text()
                 for seg in self.deepl_translated_transcript[-self.send_last_n_segments:]:
-                    deepl_text.append(seg["text"].strip() + "\n\n", style="white")
+                    deepl_text.append(seg["text"].strip() + "\n", style="white")
                 
                 # Create status bar with DeepL info
                 status_str = self._get_deepl_status_string()
@@ -420,6 +526,23 @@ class Client:
                     padding=(1, 2)
                 )
                 display_panels.append(deepl_panel)
+
+            # Gemini translation panel (if enabled)
+            if self.enable_gemini_translation:
+                with self._gemini_lock:
+                    gemini_text_value = self.gemini_translated_text
+                gemini_text = Text()
+                if gemini_text_value:
+                    gemini_text.append(gemini_text_value.strip(), style="white")
+                status_str = self._get_gemini_status_string()
+                gemini_panel = Panel(
+                    gemini_text,
+                    title=f"[bold cyan]✨ Gemini Translation to {self.gemini_target_language.upper()}[/bold cyan]",
+                    subtitle=f"[dim]{status_str}[/dim]" if status_str else None,
+                    border_style="cyan",
+                    padding=(1, 2)
+                )
+                display_panels.append(gemini_panel)
             
             # Update live display or print to console (thread-safe)
             if self.live_display is not None:
@@ -552,6 +675,7 @@ class Client:
         """
         try:
             self._deepl_stop_event.set()
+            self._gemini_stop_event.set()
             self.client_socket.close()
         except Exception as e:
             print("[ERROR]: Error closing WebSocket:", e)
@@ -606,6 +730,12 @@ class Client:
             self._deepl_translate_pending(force=True)
             self.deepl_translation_srt_file_path = output_path.replace(".srt", "_deepl.srt")
             utils.create_srt_file(self.deepl_translated_transcript, self.deepl_translation_srt_file_path)
+    
+        if self.enable_gemini_translation:
+            self.gemini_translation_srt_file_path = output_path.replace(".srt", "_gemini.srt")
+            self._gemini_translate_full_text()
+            utils.create_srt_file(self.gemini_translated_transcript, self.gemini_translation_srt_file_path)
+
 
     def wait_before_disconnect(self, max_wait_seconds=None):
         """Waits a bit before disconnecting in order to process pending responses."""
@@ -1112,6 +1242,11 @@ class TranscriptionClient(TranscriptionTeeClient):
         deepl_target_language=None,
         deepl_translation_interval=30,
         deepl_translation_srt_file_path="./output_deepl_translated.srt",
+        enable_gemini_translation=False,
+        gemini_target_language=None,
+        gemini_translation_interval=30,
+        gemini_model="gemini-1.5-flash",
+        gemini_translation_output_path="./output_gemini_translation.txt",
     ):
         self.client = Client(
             host,
@@ -1138,6 +1273,11 @@ class TranscriptionClient(TranscriptionTeeClient):
             deepl_target_language=deepl_target_language,
             deepl_translation_interval=deepl_translation_interval,
             deepl_translation_srt_file_path=deepl_translation_srt_file_path,
+            enable_gemini_translation=enable_gemini_translation,
+            gemini_target_language=gemini_target_language,
+            gemini_translation_interval=gemini_translation_interval,
+            gemini_model=gemini_model,
+            gemini_translation_output_path=gemini_translation_output_path,
         )
 
         if save_output_recording and not output_recording_filename.endswith(".wav"):

@@ -7,8 +7,8 @@ def main():
         
         use_vad=True,
         
-        model="large-v3-turbo", #large-v3-turbo not multilingual
-        lang="de",         
+        model="large-v3", #large-v3-turbo not multilingual
+        lang="ja",         
         translate=False,    
                 
         # output_recording_filename="./rec.wav",
@@ -19,10 +19,16 @@ def main():
         target_language="en",
 
         enable_deepl_translation=True,
-        deepl_source_language="DE",
+        deepl_source_language="JA",
         deepl_target_language="EN-US",
-        deepl_translation_interval=15, # seconds
+        deepl_translation_interval=10, # seconds
         # deepl_translation_srt_file_path="./output_deepl_translated.srt",
+
+        enable_gemini_translation=False,
+        gemini_target_language="en",
+        gemini_translation_interval=15, # seconds
+        gemini_model="gemini-1.5-flash",
+        # gemini_translation_output_path="./output_gemini_translation.txt",
         
         initial_prompt=None,
         # initial_prompt="Translate german sentences into english.",
