@@ -839,9 +839,12 @@ class WhisperModel:
             audio = np.concatenate(audio_chunks, axis=0)
             duration_after_vad = audio.shape[0] / sampling_rate
 
+            removed_seconds = max(0.0, duration - duration_after_vad)
+            removed_pct = 0.0 if duration <= 0 else (removed_seconds / duration) * 100.0
+            # Keep this log concise: users care more about how much got removed than the exact time.
             self.logger.info(
-                "VAD filter removed %s of audio",
-                format_timestamp(duration - duration_after_vad),
+                "VAD filter removed %.1f%% of audio segment",
+                removed_pct,
             )
 
             if self.logger.isEnabledFor(logging.DEBUG):

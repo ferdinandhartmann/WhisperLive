@@ -14,8 +14,14 @@ def main():
         # output_recording_filename="./rec.wav",
         save_output_recording=True,
         
-        enable_translation=False,
+        enable_translation=True,
         target_language="en",
+        translation_model_name="Qwen/Qwen2.5-14B-Instruct",
+        translation_system_prompt=(
+            "You are an expert Japanese-to-English translator. "
+            "Translate Japanese speech into natural, conversational English. "
+            "Preserve tone and meaning, avoid literal phrasing, and output only the final translation."
+        ),
 
         enable_deepl_translation=True,
         deepl_source_language="JA",
@@ -29,7 +35,7 @@ def main():
         gemini_model="gemini-1.5-flash",
         # gemini_translation_output_path="./output_gemini_translation.txt",
         
-        initial_prompt=None,
+        initial_prompt="This is spoken Japanese conversation. Translate naturally into English while preserving intent and tone.",
         # initial_prompt="Translate german sentences into english.",
         # initial_prompt="Translate this japanese lab meeting conversation about robotics and AI models into english.",
     )

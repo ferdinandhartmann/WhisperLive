@@ -166,7 +166,10 @@ class TranscriptionServer:
         translation_thread = None
         
         if enable_translation:
-            target_language = options.get("target_language", "fr")
+            target_language = options.get("target_language", "en")
+            translation_model_name = options.get("translation_model_name", "Qwen/Qwen2.5-14B-Instruct")
+            translation_system_prompt = options.get("translation_system_prompt")
+            initial_prompt = options.get("initial_prompt")
             translation_queue = queue.Queue()
             from whisper_live.backend.translation_backend import ServeClientTranslation
             translation_client = ServeClientTranslation(
@@ -174,7 +177,10 @@ class TranscriptionServer:
                 websocket=websocket,
                 translation_queue=translation_queue,
                 target_language=target_language,
-                send_last_n_segments=options.get("send_last_n_segments", 10)
+                send_last_n_segments=options.get("send_last_n_segments", 10),
+                model_name=translation_model_name,
+                translation_system_prompt=translation_system_prompt,
+                initial_prompt=initial_prompt,
             )
             
             # Start translation thread
