@@ -45,6 +45,8 @@ class Client:
         transcription_callback=None,
         enable_translation=False,
         target_language="fr",
+        translation_model_name="Qwen/Qwen2.5-14B-Instruct",
+        translation_system_prompt=None,
         translation_callback=None,
         translation_srt_file_path="output_translated.srt",
         initial_prompt=None,
@@ -110,6 +112,8 @@ class Client:
         # Translation-specific attributes
         self.enable_translation = enable_translation
         self.target_language = target_language
+        self.translation_model_name = translation_model_name
+        self.translation_system_prompt = translation_system_prompt
         self.translation_callback = translation_callback
         self.translation_srt_file_path = translation_srt_file_path
         self.last_translated_segment = None
@@ -645,6 +649,8 @@ class Client:
                     "same_output_threshold": self.same_output_threshold,
                     "enable_translation": self.enable_translation,
                     "target_language": self.target_language,
+                    "translation_model_name": self.translation_model_name,
+                    "translation_system_prompt": self.translation_system_prompt,
                     "initial_prompt": self.initial_prompt,
                 }
             )
@@ -1234,6 +1240,8 @@ class TranscriptionClient(TranscriptionTeeClient):
         transcription_callback=None,
         enable_translation=False,
         target_language="fr",
+        translation_model_name="Qwen/Qwen2.5-14B-Instruct",
+        translation_system_prompt=None,
         translation_callback=None,
         translation_srt_file_path="./output_translated.srt",
         initial_prompt=None,
@@ -1265,6 +1273,8 @@ class TranscriptionClient(TranscriptionTeeClient):
             transcription_callback=transcription_callback,
             enable_translation=enable_translation,
             target_language=target_language,
+            translation_model_name=translation_model_name,
+            translation_system_prompt=translation_system_prompt,
             translation_callback=translation_callback,
             translation_srt_file_path=translation_srt_file_path,
             initial_prompt=initial_prompt,

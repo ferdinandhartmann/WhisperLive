@@ -1,15 +1,7 @@
 import json
 import logging
-import threading
-import time
-import queue
-from typing import Dict, Any, Optional
 import torch
-import threading
-# from transformers import M2M100ForConditionalGeneration
-from transformers import AutoModelForSeq2SeqLM
-# from whisper_live.backend.tokenization_small100 import SMALL100Tokenizer
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from whisper_live.backend.base import ServeClientBase
 
@@ -26,9 +18,11 @@ class ServeClientTranslation(ServeClientBase):
         client_uid,
         websocket,
         translation_queue,
-        target_language="fr", 
+        target_language="en",
         send_last_n_segments=15,
-        model_name="alirezamsh/small100"
+        model_name="Qwen/Qwen2.5-14B-Instruct",
+        translation_system_prompt=None,
+        initial_prompt=None,
     ):
         """
         Initialize the translation client.
@@ -37,7 +31,7 @@ class ServeClientTranslation(ServeClientBase):
             client_uid (str): Unique identifier for the client
             websocket: WebSocket connection to the client
             translation_queue (queue.Queue): Queue containing completed segments to translate
-            target_language (str): Target language code (default: "fr" for French)
+            target_language (str): Target language code (default: "en" for English)
             send_last_n_segments (int): Number of recent translated segments to send
             model_name (str): Translation model name to use
         """
@@ -45,6 +39,15 @@ class ServeClientTranslation(ServeClientBase):
         self.translation_queue = translation_queue
         self.target_language = target_language
         self.model_name = model_name
+        self.translation_system_prompt = (
+            translation_system_prompt
+            or "You are an expert Japanese-to-English translator. "
+               "Translate the user's Japanese input into natural, conversational English. "
+               "Preserve the original tone, intent, and nuance. "
+               "Do not produce a literal word-for-word translation. "
+               "Return only the final English translation with no extra commentary."
+        )
+        self.initial_prompt = initial_prompt
         self.translated_segments = []
         self.translation_model = None
         self.tokenizer = None
@@ -57,23 +60,24 @@ class ServeClientTranslation(ServeClientBase):
         try:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             logging.info(f"Loading translation model on : {self.device}")
-            
-            # self.translation_model = M2M100ForConditionalGeneration.from_pretrained(
-                # self.model_name
-            self.translation_model = AutoModelForSeq2SeqLM.from_pretrained(
-                "facebook/nllb-200-distilled-600M"
+
+            dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            if self.tokenizer.pad_token_id is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+
+            self.translation_model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
             ).to(self.device)
-            # self.tokenizer = SMALL100Tokenizer.from_pretrained(self.model_name)
-            # self.tokenizer.tgt_lang = self.target_language
-            self.tokenizer = AutoTokenizer.from_pretrained("facebook/nllb-200-distilled-600M")
-            self.tokenizer.src_lang = "jpn_Jpan"
-            if self.target_language == "en":
-                self.forced_bos_token_id = self.tokenizer.convert_tokens_to_ids("eng_Latn")
-            elif self.target_language == "de":
-                self.forced_bos_token_id = self.tokenizer.convert_tokens_to_ids("deu_Latn")
+            self.translation_model.eval()
             
             self.model_loaded = True
-            logging.info(f"Translation model loaded successfully. Target language: {self.target_language}")
+            logging.info(
+                f"Translation model loaded successfully: {self.model_name}. "
+                f"Target language: {self.target_language}"
+            )
         except Exception as e:
             logging.error(f"Failed to load translation model: {e}")
             self.translation_model = None
@@ -95,29 +99,52 @@ class ServeClientTranslation(ServeClientBase):
             
         try:
             text = self.clean_text(text)
-            # Encode input and move to device
-            # encoded_input = self.tokenizer(text, return_tensors="pt").to(self.device)
+
+            messages = [
+                {"role": "system", "content": self.translation_system_prompt},
+                {
+                    "role": "system",
+                    "content": (
+                        f"Translate from Japanese to {self.target_language}. "
+                        "Keep meaning and tone, and return only the translation."
+                    ),
+                },
+            ]
+            if self.initial_prompt:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": f"Additional context: {self.initial_prompt}",
+                    }
+                )
+            messages.append({"role": "user", "content": text})
+
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
             encoded_input = self.tokenizer(
-                text,
+                prompt,
                 return_tensors="pt",
-                padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=2048,
             ).to(self.device)
-            
-            # Generate translation
+
             with torch.no_grad():
-                # generated_tokens = self.translation_model.generate(**encoded_input)
                 generated_tokens = self.translation_model.generate(
                     **encoded_input,
-                    forced_bos_token_id=self.forced_bos_token_id,
-                    max_length=512,
-                    num_beams=4,
+                    max_new_tokens=256,
+                    do_sample=False,
+                    use_cache=True,
+                    pad_token_id=self.tokenizer.pad_token_id,
                 )
-            
-            # Decode output
-            output = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            return output[0] if output else text
+
+            prompt_len = encoded_input["input_ids"].shape[-1]
+            new_tokens = generated_tokens[0][prompt_len:]
+            output = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            return output if output else text
             
         except Exception as e:
             logging.error(f"Translation failed for text '{text}': {e}")
@@ -138,8 +165,8 @@ class ServeClientTranslation(ServeClientBase):
         
         while not self.exit:
             try:
-                # Get segment from queue with timeout
-                segment = self.translation_queue.get(timeout=1.0)
+                # Blocking get keeps latency low and avoids polling delays.
+                segment = self.translation_queue.get()
                 
                 # Check for exit signal
                 if segment is None:
@@ -170,8 +197,6 @@ class ServeClientTranslation(ServeClientBase):
                 
                 self.translation_queue.task_done()
                 
-            except queue.Empty:
-                continue
             except Exception as e:
                 logging.error(f"Error processing translation queue: {e}")
                 continue
@@ -219,9 +244,7 @@ class ServeClientTranslation(ServeClientBase):
             language (str): New target language code
         """
         self.target_language = language
-        if self.tokenizer:
-            self.tokenizer.tgt_lang = language
-            logging.info(f"Target language changed to: {language}")
+        logging.info(f"Target language changed to: {language}")
     
     def cleanup(self):
         """Clean up translation resources."""
@@ -230,7 +253,7 @@ class ServeClientTranslation(ServeClientBase):
         
         try:
             self.translation_queue.put(None, timeout=1.0)
-        except:
+        except Exception:
             pass
         
         self.translated_segments.clear()
