@@ -15,6 +15,7 @@ Keep the SSH session open while using the client.
 ### 2. Run the server (remote)
 SSH into the server (if not already) and start the server:
 ```bash
+source venv_whisperlive/bin/activate
 # on the remote host
 chmod +x ./run_server.sh   # only if needed
 ./run_server.sh

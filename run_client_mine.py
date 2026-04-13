@@ -8,19 +8,20 @@ def main():
         use_vad=True,
         
         model="large-v3", #large-v3-turbo not multilingual
-        lang="ja",         
+        lang="ja",                
         translate=False,    
                 
         # output_recording_filename="./rec.wav",
         save_output_recording=True,
         
-        enable_translation=False,
+        enable_translation=True,
         target_language="en",
 
-        enable_deepl_translation=True,
+        # It is translating the segments added sinc the last translation. Segment = full sentence.
+        enable_deepl_translation=False,
         deepl_source_language="JA",
         deepl_target_language="EN-US",
-        deepl_translation_interval=8, # seconds
+        deepl_translation_interval=2, # seconds
         # deepl_translation_srt_file_path="./output_deepl_translated.srt",
 
         enable_gemini_translation=False,
