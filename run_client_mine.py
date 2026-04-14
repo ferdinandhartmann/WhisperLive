@@ -16,7 +16,7 @@ def main():
         
         enable_translation=True,
         target_language="en",
-        translation_model_name="Qwen/Qwen2.5-14B-Instruct",
+        translation_model_name="Qwen/Qwen2.5-7B-Instruct", #Qwen/Qwen2.5-14B-Instruct
         translation_system_prompt=(
             "You are an expert Japanese-to-English translator. "
             "Translate Japanese speech into natural, conversational English. "

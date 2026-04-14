@@ -357,6 +357,13 @@ class ServeClientBase(object):
                     completed=False
                 )
 
+            # Feed incomplete segments to the translation worker for draft output.
+            if self.translation_queue and last_segment["text"].strip():
+                try:
+                    self.translation_queue.put(last_segment.copy(), timeout=0.05)
+                except queue.Full:
+                    logging.warning("Translation queue is full, skipping draft segment")
+
         # Handle repeated output logic.
         if self.current_out.strip() == self.prev_out.strip() and self.current_out != '':
             self.same_output_count += 1

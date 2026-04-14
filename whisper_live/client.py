@@ -422,6 +422,7 @@ class Client:
     def process_segments(self, segments, translated=False):
         """Processes transcript segments."""
         text = []
+        has_incomplete_segment = False
         for i, seg in enumerate(segments):
             if not text or text[-1] != seg["text"]:
                 text.append(seg["text"].strip())
@@ -432,11 +433,23 @@ class Client:
                     text[-1] = self.add_japanese_punctuation(text[-1])
                 
                 if i == len(segments) - 1 and not seg.get("completed", False):
-                    self.last_segment = seg
+                    has_incomplete_segment = True
+                    if translated:
+                        self.last_translated_segment = seg
+                    else:
+                        self.last_segment = seg
                 elif self.server_backend == "faster_whisper" and seg.get("completed", False):
                     if translated:
-                        if (not self.translated_transcript or float(seg['start']) >= float(self.translated_transcript[-1]['end'])):
+                        if (
+                            not self.translated_transcript
+                            or float(seg['start']) >= float(self.translated_transcript[-1]['end'])
+                        ):
                             self.translated_transcript.append(seg)
+                        elif (
+                            self.translated_transcript[-1].get("start") == seg.get("start")
+                            and self.translated_transcript[-1].get("end") == seg.get("end")
+                        ):
+                            self.translated_transcript[-1] = seg
                     else:
                         if (not self.transcript or float(seg['start']) >= float(self.transcript[-1]['end'])):
                             if self.enable_deepl_translation:
@@ -444,6 +457,9 @@ class Client:
                                     self.transcript.append(seg)
                             else:
                                 self.transcript.append(seg)
+        if translated and not has_incomplete_segment:
+            self.last_translated_segment = None
+
         # update last received segment and last valid response time
         if not translated:
             if self.last_received_segment is None or self.last_received_segment != segments[-1]["text"]:
@@ -503,6 +519,12 @@ class Client:
                 translation_text = Text()
                 for seg in self.translated_transcript[-self.send_last_n_segments:]:
                     translation_text.append(seg["text"].strip() + "\n", style="white")
+
+                if self.last_translated_segment is not None:
+                    translation_text.append(
+                        "[draft] " + self.last_translated_segment["text"].strip() + "\n",
+                        style="bright_black"
+                    )
                 
                 translation_panel = Panel(
                     translation_text,

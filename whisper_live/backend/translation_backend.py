@@ -1,5 +1,7 @@
 import json
 import logging
+import threading
+import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -53,6 +55,11 @@ class ServeClientTranslation(ServeClientBase):
         self.tokenizer = None
         self.device = None
         self.model_loaded = False
+        self.model_lock = threading.Lock()
+        self.latest_draft_segment = None
+        self.last_draft_source_text = ""
+        self.last_draft_sent_at = 0.0
+        self.min_draft_interval_seconds = 0.6
         self.load_translation_model()
         
     def load_translation_model(self):
@@ -66,12 +73,15 @@ class ServeClientTranslation(ServeClientBase):
             if self.tokenizer.pad_token_id is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            self.translation_model = AutoModelForCausalLM.from_pretrained(
+            model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=dtype,
                 low_cpu_mem_usage=True,
             ).to(self.device)
-            self.translation_model.eval()
+            model.eval()
+
+            with self.model_lock:
+                self.translation_model = model
             
             self.model_loaded = True
             logging.info(
@@ -80,8 +90,9 @@ class ServeClientTranslation(ServeClientBase):
             )
         except Exception as e:
             logging.error(f"Failed to load translation model: {e}")
-            self.translation_model = None
-            self.tokenizer = None
+            with self.model_lock:
+                self.translation_model = None
+                self.tokenizer = None
             self.model_loaded = False
     
     def translate_text(self, text: str) -> str:
@@ -98,6 +109,13 @@ class ServeClientTranslation(ServeClientBase):
             return text
             
         try:
+            with self.model_lock:
+                local_model = self.translation_model
+                local_tokenizer = self.tokenizer
+
+            if local_model is None or local_tokenizer is None:
+                return text
+
             text = self.clean_text(text)
 
             messages = [
@@ -119,13 +137,13 @@ class ServeClientTranslation(ServeClientBase):
                 )
             messages.append({"role": "user", "content": text})
 
-            prompt = self.tokenizer.apply_chat_template(
+            prompt = local_tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
             )
 
-            encoded_input = self.tokenizer(
+            encoded_input = local_tokenizer(
                 prompt,
                 return_tensors="pt",
                 truncation=True,
@@ -133,17 +151,17 @@ class ServeClientTranslation(ServeClientBase):
             ).to(self.device)
 
             with torch.no_grad():
-                generated_tokens = self.translation_model.generate(
+                generated_tokens = local_model.generate(
                     **encoded_input,
                     max_new_tokens=256,
                     do_sample=False,
                     use_cache=True,
-                    pad_token_id=self.tokenizer.pad_token_id,
+                    pad_token_id=local_tokenizer.pad_token_id,
                 )
 
             prompt_len = encoded_input["input_ids"].shape[-1]
             new_tokens = generated_tokens[0][prompt_len:]
-            output = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+            output = local_tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
             return output if output else text
             
         except Exception as e:
@@ -173,25 +191,42 @@ class ServeClientTranslation(ServeClientBase):
                     logging.info(f"Received exit signal for translation client {self.client_uid}")
                     break
                     
-                # Only translate completed segments
-                if not segment.get("completed", False):
+                # Translate all segments. Incomplete segments are sent as low-latency drafts.
+                original_text = segment.get("text", "")
+                is_completed = segment.get("completed", False)
+
+                if not original_text.strip():
                     self.translation_queue.task_done()
                     continue
-                    
-                # Translate the segment
-                original_text = segment.get("text", "")
+
+                if not is_completed:
+                    now = time.time()
+                    if original_text == self.last_draft_source_text:
+                        self.translation_queue.task_done()
+                        continue
+                    if now - self.last_draft_sent_at < self.min_draft_interval_seconds:
+                        self.translation_queue.task_done()
+                        continue
+
                 translated_text = self.translate_text(original_text)
-                
-                # Create translated segment
+
                 translated_segment = {
                     "start": segment["start"],
                     "end": segment["end"],
                     "text": translated_text,
-                    "completed": segment.get("completed", False),
+                    "completed": is_completed,
+                    "translation_state": "final" if is_completed else "draft",
                     "target_language": self.target_language
                 }
-                
-                self.translated_segments.append(translated_segment)
+
+                if is_completed:
+                    self._upsert_translated_segment(translated_segment)
+                    self.latest_draft_segment = None
+                else:
+                    self.latest_draft_segment = translated_segment
+                    self.last_draft_source_text = original_text
+                    self.last_draft_sent_at = now
+
                 segments_to_send = self.prepare_translated_segments()
                 self.send_translation_to_client(segments_to_send)
                 
@@ -202,6 +237,15 @@ class ServeClientTranslation(ServeClientBase):
                 continue
         
         logging.info(f"Translation processing ended for client {self.client_uid}")
+
+    def _upsert_translated_segment(self, translated_segment):
+        """Insert or replace a finalized translated segment by matching timestamps."""
+        for i in range(len(self.translated_segments) - 1, -1, -1):
+            seg = self.translated_segments[i]
+            if seg["start"] == translated_segment["start"] and seg["end"] == translated_segment["end"]:
+                self.translated_segments[i] = translated_segment
+                return
+        self.translated_segments.append(translated_segment)
     
     def prepare_translated_segments(self):
         """
@@ -211,8 +255,14 @@ class ServeClientTranslation(ServeClientBase):
             list: List of recent translated segments
         """
         if len(self.translated_segments) >= self.send_last_n_segments:
-            return self.translated_segments[-self.send_last_n_segments:]
-        return self.translated_segments[:]
+            segments = self.translated_segments[-self.send_last_n_segments:]
+        else:
+            segments = self.translated_segments[:]
+
+        # Append current low-latency draft so the client can render it separately.
+        if self.latest_draft_segment is not None:
+            segments = segments + [self.latest_draft_segment]
+        return segments
     
     def send_translation_to_client(self, translated_segments):
         """
@@ -257,13 +307,17 @@ class ServeClientTranslation(ServeClientBase):
             pass
         
         self.translated_segments.clear()
+        self.latest_draft_segment = None
+        self.last_draft_source_text = ""
+        self.last_draft_sent_at = 0.0
         
-        if self.translation_model:
-            del self.translation_model
-            self.translation_model = None
-        if self.tokenizer:
-            del self.tokenizer
-            self.tokenizer = None
+        with self.model_lock:
+            if self.translation_model:
+                del self.translation_model
+                self.translation_model = None
+            if self.tokenizer:
+                del self.tokenizer
+                self.tokenizer = None
         
         if self.device and self.device.type == 'cuda':
             torch.cuda.empty_cache()
