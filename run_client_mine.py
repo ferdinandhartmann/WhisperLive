@@ -36,7 +36,10 @@ def main():
         gemini_model="gemini-1.5-flash",
         # gemini_translation_output_path="./output_gemini_translation.txt",
         
-        initial_prompt="This is spoken Japanese conversation. Translate naturally into English while preserving intent and tone.",
+        initial_prompt=(
+            "This is spoken Japanese conversation. "
+            "For Japanese transcription, restore natural sentence punctuation (。 and ？) at sentence boundaries."
+        ),
         # initial_prompt="Translate german sentences into english.",
         # initial_prompt="Translate this japanese lab meeting conversation about robotics and AI models into english.",
     )

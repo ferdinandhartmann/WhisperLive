@@ -1,6 +1,7 @@
 import os
 import shutil
 import wave
+import re
 
 import logging
 import numpy as np
@@ -403,60 +404,71 @@ class Client:
         elif status == "WARNING":
             print(f"Message from Server: {message_data['message']}")
             
-    def add_japanese_punctuation(self, sentence):
-        """
-        Adds punctuation to the sentence based on Japanese sentence-ending markers.
-        """
-        # Define common sentence-ending markers
-        sentence_endings = ["ますか", "ね", "よ", "ます", "だろう", "でしょう", "たしかに"]
+    def add_japanese_punctuation(self, sentence, completed=False):
+        """Adds sentence-final punctuation to Japanese text using lightweight heuristics."""
+        sentence = sentence.strip()
+        if not sentence:
+            return sentence
 
-        # Check if the sentence ends with a question-like marker
-        if any(sentence.endswith(ending) for ending in sentence_endings):
-            if sentence.endswith("ますか"):
-                return sentence + "?"
-            else:
-                return sentence + "。"  # Add a Japanese full stop (period)
+        # Keep model-provided punctuation untouched.
+        if sentence.endswith(("。", "！", "？", "!", "?", "…")):
+            return sentence
 
-        return sentence  # If no sentence-ending marker is found, return as is
+        # If the segment appears to be a question, prefer a question mark.
+        question_like_endings = (
+            r"ですか|ますか|でしょうか|だろうか|かな|かい|の\?|のか"
+        )
+        if re.search(rf"({question_like_endings})$", sentence):
+            return sentence + "？"
+
+        # Only force a full stop when the ASR marked the segment as completed.
+        if completed:
+            return sentence + "。"
+        return sentence
 
     def process_segments(self, segments, translated=False):
         """Processes transcript segments."""
         text = []
         has_incomplete_segment = False
         for i, seg in enumerate(segments):
-            if not text or text[-1] != seg["text"]:
-                text.append(seg["text"].strip())
-                
-                 # Automatically add punctuation for Japanese sentences
-                if self.language == "ja":
-                    # Add punctuation based on sentence-ending markers
-                    text[-1] = self.add_japanese_punctuation(text[-1])
+            seg_text = seg["text"].strip()
+            if not translated and self.language == "ja":
+                seg_text = self.add_japanese_punctuation(
+                    seg_text,
+                    completed=seg.get("completed", False),
+                )
+
+            if not text or text[-1] != seg_text:
+                text.append(seg_text)
+
+                seg_to_store = seg.copy()
+                seg_to_store["text"] = seg_text
                 
                 if i == len(segments) - 1 and not seg.get("completed", False):
                     has_incomplete_segment = True
                     if translated:
-                        self.last_translated_segment = seg
+                        self.last_translated_segment = seg_to_store
                     else:
-                        self.last_segment = seg
+                        self.last_segment = seg_to_store
                 elif self.server_backend == "faster_whisper" and seg.get("completed", False):
                     if translated:
                         if (
                             not self.translated_transcript
-                            or float(seg['start']) >= float(self.translated_transcript[-1]['end'])
+                            or float(seg_to_store['start']) >= float(self.translated_transcript[-1]['end'])
                         ):
-                            self.translated_transcript.append(seg)
+                            self.translated_transcript.append(seg_to_store)
                         elif (
-                            self.translated_transcript[-1].get("start") == seg.get("start")
-                            and self.translated_transcript[-1].get("end") == seg.get("end")
+                            self.translated_transcript[-1].get("start") == seg_to_store.get("start")
+                            and self.translated_transcript[-1].get("end") == seg_to_store.get("end")
                         ):
-                            self.translated_transcript[-1] = seg
+                            self.translated_transcript[-1] = seg_to_store
                     else:
-                        if (not self.transcript or float(seg['start']) >= float(self.transcript[-1]['end'])):
+                        if (not self.transcript or float(seg_to_store['start']) >= float(self.transcript[-1]['end'])):
                             if self.enable_deepl_translation:
                                 with self._deepl_lock:
-                                    self.transcript.append(seg)
+                                    self.transcript.append(seg_to_store)
                             else:
-                                self.transcript.append(seg)
+                                self.transcript.append(seg_to_store)
         if translated and not has_incomplete_segment:
             self.last_translated_segment = None
 
